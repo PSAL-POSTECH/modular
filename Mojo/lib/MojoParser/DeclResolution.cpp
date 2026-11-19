@@ -954,6 +954,16 @@ LogicalResult FnSigDecorators::applyOne(ExprNode *decorator) {
     applyLLVMMetadata(decorator->getLoc(), callNode);
   } else if (spelling == "__llvm_arg_metadata") {
     applyLLVMArgMetadata(decorator->getLoc(), callNode);
+  } else if (spelling == "task" || spelling == "subtask" ||
+             spelling == "minitask") {
+    // Fractra NDP role model (paper Fig.5): tag the decorated function with its
+    // role. Intercepting at the decorator spelling (before symbol resolution)
+    // means no "unknown declaration" error and no whitelist edit is needed; the
+    // role is attached as an MLIR attr that downstream passes can read.
+    applyArgumentless(spelling, callNode, [&]() {
+      funcOp->setAttr("fractra.role",
+                      StringAttr::get(funcOp.getContext(), spelling));
+    });
   } else {
     return failure();
   }
