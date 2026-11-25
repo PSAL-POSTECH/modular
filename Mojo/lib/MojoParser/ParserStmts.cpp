@@ -402,6 +402,8 @@ struct StmtParser : public ParserBase {
   // Helper invoked during parseDefFnStmt, meant to mark defaulted trait method
   // (first token in the function body is not '...').
   void maybeMarkDefaultedTraitMethod(FnOp fnOp);
+  void checkSingleTaskMethod(StructASTDecl &structDecl,
+                             LexerCursor startCursor, StringAttr baseName);
 
   /// Check if we're inside a struct or trait body (where control flow
   /// statements are not allowed). Returns true if we are, false otherwise.
@@ -4844,6 +4846,12 @@ ParseResult StmtParser::parseDefFnStmt(LexerCursor startCursor,
   if (isa<TraitASTDecl>(curDeclScope))
     maybeMarkDefaultedTraitMethod(fnOp);
 
+  // Fractra: a struct may have at most one @task method. Signatures resolve
+  // lazily, so the decorators are re-lexed here to count unused methods too.
+  if (auto *structDecl = dyn_cast<StructASTDecl>(curDeclScope);
+      structDecl && startCursor != getLexer().getCursor())
+    checkSingleTaskMethod(*structDecl, startCursor, baseName);
+
   // Skip the body of this definition: go to a token at the start of the next
   // line at the same indent level (or less) as the current definition.
   skipUntilIndentation(curIndent);
@@ -4862,6 +4870,39 @@ ParseResult StmtParser::parseDefFnStmt(LexerCursor startCursor,
   if (curDeclScope->getNearestDeclOfType<DefASTDecl>())
     (void)getDeclResolver().resolveBody(funcDecl, loc);
   return success();
+}
+
+void StmtParser::checkSingleTaskMethod(StructASTDecl &structDecl,
+                                       LexerCursor startCursor,
+                                       StringAttr baseName) {
+  // Scan `@name` lines up to the `def`; only a bare `@task` counts.
+  Lexer decorLexer(shared.diags, startCursor);
+  ParserBase decorParser(shared, decorLexer);
+  SMLoc taskLoc;
+  while (decorParser.getToken().is(Token::at)) {
+    decorParser.consumeToken();
+    const Token &tok = decorParser.getToken();
+    if (tok.isIdentifier() && tok.getSpelling() == "task") {
+      SMLoc loc = tok.getLoc();
+      decorParser.consumeToken();
+      if (decorParser.getToken().isStartOfLine())
+        taskLoc = loc;
+    }
+    while (!decorParser.getToken().isStartOfLine() &&
+           !decorParser.getToken().is(Token::eof))
+      decorParser.consumeToken();
+  }
+  if (!taskLoc.isValid())
+    return;
+
+  StructDeclOp structOp = structDecl.getOp();
+  if (auto first = structOp->getAttrOfType<StringAttr>("fractra.task")) {
+    emitError(taskLoc) << "struct '" << structOp.getDeclName().getValue()
+                       << "' already has a @task method '" << first.getValue()
+                       << "'; a task has at most one @task";
+    return;
+  }
+  structOp->setAttr("fractra.task", baseName);
 }
 
 void StmtParser::maybeMarkDefaultedTraitMethod(FnOp fnOp) {
