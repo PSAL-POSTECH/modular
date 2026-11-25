@@ -157,6 +157,8 @@ struct ParsedArgument {
   ExprNode *initExpr = nullptr;
   // If this is a ref convention, this specifies the origin expression.
   ExprNode *refOriginExpr = nullptr;
+  // Fractra: role the function bound to this parameter must carry (`f: @subtask def ...`).
+  StringAttr requiredRole;
 
   /// This gets set to true when there is a /diagnosed/ error that should
   /// prevent subsequent references to this argument.

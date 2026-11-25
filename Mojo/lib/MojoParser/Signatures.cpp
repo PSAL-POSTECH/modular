@@ -374,6 +374,20 @@ ParseResult ParsedArgument::parse(ParserBase &p, KWArgMarkerInfo &markerInfo,
 
         variadicKind = VariadicKind::PackVarArg;
       }
+      // Fractra: `f: @subtask def (...)` requires the bound function's role.
+      SMLoc atLoc = p.getToken().getLoc();
+      if (kind == ArgListKind::kParamList && p.consumeIf(Token::at)) {
+        StringAttr role;
+        if (p.parseIdentifier(role, "expected a role after '@'"))
+          return failure();
+        if (role.getValue() != "task" && role.getValue() != "subtask" &&
+            role.getValue() != "minitask") {
+          p.emitError(atLoc, "unknown parameter role '@")
+              << role.getValue() << "', expected task, subtask or minitask";
+          return failure();
+        }
+        requiredRole = role;
+      }
       ExprNode *typeExprNode;
       if (p.parseStarredItem(typeExprNode))
         return failure();

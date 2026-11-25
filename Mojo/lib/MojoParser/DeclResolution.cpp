@@ -2225,6 +2225,17 @@ LogicalResult DefASTDecl::resolveSignature(Lexer &lexer) {
     return failure();
   TypeCheckedParamList &paramList = *paramListOrError;
 
+  // Fractra: record `f: @role def ...` requirements by parameter name.
+  {
+    SmallVector<NamedAttribute> roles;
+    for (const ParsedArgument &param : parsedParamList.params)
+      if (param.requiredRole)
+        roles.emplace_back(param.name, param.requiredRole);
+    if (!roles.empty())
+      funcOp->setAttr("fractra.param_roles",
+                      DictionaryAttr::get(funcOp.getContext(), roles));
+  }
+
   // Emit the argument and result types.
   TypeCheckedFnSignature tcSignature(paramList, fnSignature,
                                      /*captureOrigins=*/nullptr, this,

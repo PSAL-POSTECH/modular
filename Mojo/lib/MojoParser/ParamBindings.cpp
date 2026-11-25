@@ -103,6 +103,64 @@ static bool isReferenceFromOwnFnBody(ASTDecl &fnDecl, ASTDecl &useScope) {
   return false;
 }
 
+/// The concrete function a bound parameter value names, or null when it is
+/// still symbolic (a forwarded parameter, a trait witness, ...).
+static SymbolRefAttr getBoundFuncSymbol(TypedAttr value) {
+  while (value) {
+    value = ParamOperatorAttr::stripRebind(value);
+    if (auto bind = dyn_cast<BindParamsAttr>(value)) {
+      value = bind.getGenerator();
+      continue;
+    }
+    if (auto callable = dyn_cast<CallableSymbolAttrInterface>(value))
+      return callable.getSymbol();
+    if (auto sym = dyn_cast<FuncSymbolAttr>(value))
+      return sym.getSymbol();
+    if (auto lit = sugarDynCast<FnLiteralTypeGeneratorType>(value.getType()))
+      return lit.getSymbolConstantAttr().getSymbol();
+    return {};
+  }
+  return {};
+}
+
+/// Fractra: a parameter declared `f: @role def ...` only binds a function
+/// decorated `@role`.
+static LogicalResult checkParamRoles(FnOp funcOp, ASTDecl &fnDecl,
+                                     SharedState &shared,
+                                     const VerifiedParamBindings &verified,
+                                     SMLoc useLoc) {
+  auto roles = funcOp->getAttrOfType<DictionaryAttr>("fractra.param_roles");
+  if (!roles || !verified)
+    return success();
+  ArrayRef<TypedAttr> values = verified.getValues();
+  auto pogs = fnDecl.getDeclFullSignature().getParamListAttrs().getPogs();
+  for (auto [pog, value] : llvm::zip(pogs, values)) {
+    auto want = roles.getAs<StringAttr>(pog.getName());
+    if (!want)
+      continue;
+    SymbolRefAttr symbol = getBoundFuncSymbol(value);
+    if (!symbol)
+      continue;
+    auto *bound = dyn_cast_or_null<DefASTDecl>(
+        shared.resolveAndGetFuncDecl(symbol, useLoc));
+    if (!bound)
+      continue;
+    auto have = bound->getOp()->getAttrOfType<StringAttr>("fractra.role");
+    if (have == want)
+      continue;
+    auto diag = shared.emitError(useLoc, "parameter '")
+                << pog.getName().getValue() << "' of '"
+                << funcOp.getDeclName().getValue() << "' requires a '@"
+                << want.getValue() << "' function, but '"
+                << bound->getOp().getDeclName().getValue() << "' is "
+                << (have ? "'@" + have.getValue().str() + "'"
+                         : std::string("not a Fractra role"));
+    diag.attachNote(*bound) << "declared here";
+    return failure();
+  }
+  return success();
+}
+
 /// Utility function to perform substitutions of the bindings into the symbol
 /// for the given function declaration. It returns the resultant
 /// SymbolConstantAttr or produces an error message and returns null.
@@ -111,6 +169,8 @@ TypedAttr LIT::getBoundConstAttrForFn(ASTDecl &fnDecl, SharedState &shared,
                                       ASTDecl &useScope, SMLoc useLoc) {
   if (auto *defDecl = dyn_cast<DefASTDecl>(&fnDecl); defDecl) {
     FnOp funcOp = defDecl->getOp();
+    if (failed(checkParamRoles(funcOp, fnDecl, shared, verified, useLoc)))
+      return {};
     if (isReferenceFromOwnFnBody(fnDecl, useScope)) {
       StringRef name = funcOp.getDeclName().getValue();
       auto diag = shared.emitError(
